@@ -1,0 +1,167 @@
+function Main($arg, $context)
+	//----------------------------------------------------------------------------------
+	//    页面内标题导航目录
+	//----------------------------------------------------------------------------------
+	//
+	// 读取之前保存的用户选项
+	if (!LocalStore_Read("defaultValues", $defaultValues))
+		$defaultValues["top"] = false
+		$defaultValues["deleteTOC"] = false
+		
+	// 检查是否已存在目录
+	$Page = GetCurrentPage()
+	$outlines = $Page.outlines
+	$hasExistingTOC = false
+	$firstOutline = ""
+	if (Array_Length($outlines) > 0)
+		$firstOutline = $outlines[0]
+		foreach ($paragraph in $firstOutline.paragraphs)
+			if ($paragraph.text == "目录")
+				$hasExistingTOC = true
+				break 1
+				
+	// 创建对话框
+	$dialogBox = DialogBox_Create("新增/更新目录")
+	DialogBox_AddCheckBox($dialogBox, "添加「回到目录」链接", "top", $defaultValues["top"])
+	if ($hasExistingTOC)
+		DialogBox_AddCheckBox($dialogBox, "删除目录", "deleteTOC", $defaultValues["deleteTOC"])
+	DialogBox_Show($dialogBox)
+	
+	$top = $dialogBox.controls["top"]
+	$deleteTOC = $dialogBox.controls["deleteTOC"]
+	// 保存用户选项
+	LocalStore_Write("defaultValues", $dialogBox.controls)
+	
+	// ========== 如果选择删除目录 ==========
+	if ($deleteTOC)
+		// 从前往后删除：目录标题 + 目录条目 + 空行
+		$inTOC = false
+		foreach ($paragraph in $firstOutline.paragraphs)
+			if ($paragraph.text == "目录")
+				$inTOC = true
+				RemoveObject($paragraph)
+				continue 1
+			if ($inTOC)
+				// 遇到空行，删除后停止
+				if ($paragraph.text == "")
+					RemoveObject($paragraph)
+					break 1
+				// 检查是否为目录条目（包含超链接）
+				$hasLink = false
+				foreach ($t in $paragraph.texts)
+					if ($t.hyperlink != "")
+						$hasLink = true
+						break 1
+				if ($hasLink)
+					RemoveObject($paragraph)
+				else
+					// 非目录条目，停止删除
+					break 1
+					
+		// 删除所有标题旁的"回到目录"链接
+		foreach ($outline in $Page.outlines)
+			foreach ($Paragraph in $outline.paragraphs)
+				if (String_StartsWith($Paragraph.style, "h", false))
+					if (String_EndsWith($Paragraph.text, " (回到目录)", true))
+						$Paragraph.text = String_Substring($Paragraph.text, 0, String_Length($Paragraph.text) - 7)
+		return 
+		
+		// ========== 生成/更新目录 ==========
+	// 如果需要"回到目录"链接，先获取目录位置的链接
+	if ($top)
+		$topLink = QueryObjects("Paragraph", $Page)[0].hyperlink
+		
+	$HasParagraphs = false
+	
+	// 第一步：删除整个旧目录（标题 + 条目 + 空行）
+	$toDelete = Array()
+	$inTOC = false
+	foreach ($paragraph in $firstOutline.paragraphs)
+		if ($paragraph.text == "目录")
+			$inTOC = true
+			Array_PushBack($toDelete, $paragraph)
+			continue 1
+		if ($inTOC)
+			if ($paragraph.text == "")
+				Array_PushBack($toDelete, $paragraph)
+				break 1
+			$hasLink = false
+			foreach ($t in $paragraph.texts)
+				if ($t.hyperlink != "")
+					$hasLink = true
+					break 1
+			if ($hasLink)
+				Array_PushBack($toDelete, $paragraph)
+			else
+				break 1
+	// 统一删除收集到的段落
+	foreach ($p in $toDelete)
+		RemoveObject($p)
+		
+	// 第二步：从头开始插入目录条目
+	$i = 0
+	
+	// 遍历所有大纲，收集标题
+	foreach ($outline in $Page.outlines)
+		$Paragraphs = $outline.paragraphs
+		foreach ($Paragraph in $Paragraphs)
+			$ParagraphsToCheck = Array()
+			// 如果段落包含表格，则检查表格内的段落
+			if ($Paragraph.contentType == "table")
+				foreach ($TableParagraph in QueryObjects("Paragraph", $Paragraph))
+					Array_PushBack($ParagraphsToCheck, $TableParagraph)
+			else
+				Array_PushBack($ParagraphsToCheck, $Paragraph)
+			// 查找标题样式的段落
+			foreach ($Paragraph in $ParagraphsToCheck)
+				if ((!String_StartsWith($Paragraph.style, "h", false)) || ($Paragraph.text == ""))
+					continue 1
+				$HasParagraphs = true
+				// 插入新的目录条目段落
+				$Inserted_Paragraph = InsertObject($firstOutline, "Paragraph", $i)
+				// 根据标题级别设置缩进
+				$Inserted_Paragraph.indent = String_Substring($Paragraph.style, 1, 1) - 1
+				// 添加标题文本和超链接
+				$Text = InsertObject($Inserted_Paragraph, "Text", -1)
+				$value = $Paragraph.text
+				if (String_EndsWith($value, " (回到目录)", true))
+					$value = String_Substring($value, 0, String_Length($value) - 7)
+				$Text.value = $value
+				$Text.hyperlink = $Paragraph.hyperlink
+				$Text.fontSize = 13
+				$i += 1
+				// 如果需要，添加"回到目录"链接
+				$hasTop = String_EndsWith($Paragraph.text, " (回到目录)", true)
+				if ($top)
+					if ($hasTop)
+						// 更新已有的"回到目录"链接
+						foreach ($Text in $Paragraph.texts)
+							if ($Text.value == "回到目录")
+								$Text.hyperlink = $topLink
+								break 1
+					else
+						// 添加新的"回到目录"链接
+						$Texts = Array(InsertObject($Paragraph, "Text", -1), InsertObject($Paragraph, "Text", -1), InsertObject($Paragraph, "Text", -1))
+						$Texts[0].value = " ("
+						$Texts[1].value = "回到目录"
+						$Texts[1].hyperlink = $topLink
+						$Texts[2].value = ")"
+						foreach ($Text in $Texts)
+							$Text.fontSize = 9
+				else
+					// 移除已有的"回到目录"链接
+					if ($hasTop)
+						$Paragraph.text = $value
+						
+	// 第三步：添加目录标题（插入到最前面）
+	if ($HasParagraphs)
+		$Title = InsertObject($firstOutline, "Paragraph", 0)
+		$Title.text = "目录"
+		$Title.bold = true
+		$Title.fontSize = 18
+		
+	// 第四步：在目录末尾添加空行
+	if ($HasParagraphs)
+		$Sep = InsertObject($firstOutline, "Paragraph", $i + 1)
+		$Sep.text = ""
+		$Sep.fontSize = 6
